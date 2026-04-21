@@ -11,56 +11,29 @@ interface BuzzEntry {
 
 type GamePhase = "idle" | "active" | "done";
 
-function playWinnerFanfare() {
-  const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
-
-  // Nốt nhạc: C5 E5 G5 C6 — fanfare chúc mừng
-  const notes = [523, 659, 784, 1047];
-  const durations = [0.15, 0.15, 0.15, 0.5];
-  const gaps = [0, 0.15, 0.3, 0.45];
-
-  notes.forEach((freq, i) => {
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(freq, ctx.currentTime + gaps[i]);
-
-    gain.gain.setValueAtTime(0, ctx.currentTime + gaps[i]);
-    gain.gain.linearRampToValueAtTime(0.4, ctx.currentTime + gaps[i] + 0.02);
-    gain.gain.exponentialRampToValueAtTime(
-      0.001,
-      ctx.currentTime + gaps[i] + durations[i]
-    );
-
-    osc.start(ctx.currentTime + gaps[i]);
-    osc.stop(ctx.currentTime + gaps[i] + durations[i]);
-  });
-
-  // Thêm 1 chord ngân dài ở cuối
-  [523, 659, 784].forEach((freq) => {
-    const osc = ctx.createOscillator();
-    const gain = ctx.createGain();
-    osc.connect(gain);
-    gain.connect(ctx.destination);
-    osc.type = "sine";
-    osc.frequency.setValueAtTime(freq, ctx.currentTime + 0.6);
-    gain.gain.setValueAtTime(0, ctx.currentTime + 0.6);
-    gain.gain.linearRampToValueAtTime(0.2, ctx.currentTime + 0.65);
-    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.4);
-    osc.start(ctx.currentTime + 0.6);
-    osc.stop(ctx.currentTime + 1.4);
-  });
-}
-
 export default function TeacherPage() {
   const [phase, setPhase] = useState<GamePhase>("idle");
   const [buzzes, setBuzzes] = useState<BuzzEntry[]>([]);
   const [loading, setLoading] = useState(false);
-  const [celebrate, setCelebrate] = useState(false);
+  const [countdown, setCountdown] = useState<number | null>(null);
+  const [showWinner, setShowWinner] = useState(false);
   const hasPlayedRef = useRef(false);
+  const pendingWinnerRef = useRef<BuzzEntry | null>(null);
+
+  function startCountdownAndReveal(winner: BuzzEntry) {
+    setShowWinner(false);
+    setCountdown(3);
+
+    setTimeout(() => setCountdown(2), 1000);
+    setTimeout(() => setCountdown(1), 2000);
+    setTimeout(() => {
+      setCountdown(null);
+      setShowWinner(true);
+      // Phát nhạc chiến thắng
+      const audio = new Audio("/sounds/chien-thang.mp3");
+      audio.play().catch(() => {});
+    }, 3000);
+  }
 
   useEffect(() => {
     const pusher = new PusherClient(
@@ -72,8 +45,10 @@ export default function TeacherPage() {
     channel.bind("game-start", () => {
       setPhase("active");
       setBuzzes([]);
-      setCelebrate(false);
+      setShowWinner(false);
+      setCountdown(null);
       hasPlayedRef.current = false;
+      pendingWinnerRef.current = null;
     });
 
     channel.bind("student-buzz", (entry: BuzzEntry) => {
@@ -81,12 +56,11 @@ export default function TeacherPage() {
         if (prev.find((b) => b.name === entry.name)) return prev;
         const next = [...prev, entry].sort((a, b) => a.time - b.time);
 
-        // Chỉ phát nhạc cho người đầu tiên
+        // Chỉ đếm ngược + phát nhạc cho người đầu tiên
         if (next[0].name === entry.name && !hasPlayedRef.current) {
           hasPlayedRef.current = true;
-          playWinnerFanfare();
-          setCelebrate(true);
-          setTimeout(() => setCelebrate(false), 2000);
+          pendingWinnerRef.current = entry;
+          startCountdownAndReveal(entry);
         }
 
         return next;
@@ -97,8 +71,10 @@ export default function TeacherPage() {
     channel.bind("game-reset", () => {
       setPhase("idle");
       setBuzzes([]);
-      setCelebrate(false);
+      setShowWinner(false);
+      setCountdown(null);
       hasPlayedRef.current = false;
+      pendingWinnerRef.current = null;
     });
 
     fetch("/api/state")
@@ -108,6 +84,7 @@ export default function TeacherPage() {
         if (state.buzzes?.length > 0) {
           setBuzzes(state.buzzes);
           setPhase("done");
+          setShowWinner(true);
         }
       });
 
@@ -173,34 +150,46 @@ export default function TeacherPage() {
         }`}
       />
 
-      {/* Winner highlight */}
-      {winner && (
-        <div
-          className={`border-4 rounded-3xl p-6 mb-6 text-center shadow-lg transition-all duration-300 ${
-            celebrate
-              ? "bg-yellow-300 border-yellow-500 scale-105"
-              : "bg-yellow-100 border-yellow-400"
-          }`}
+      {/* Countdown overlay */}
+      {countdown !== null && (
+        <div className="flex flex-col items-center justify-center py-16">
+          <p className="text-gray-500 text-lg mb-4 font-medium">Công bố kết quả sau...</p>
+          <div
+            key={countdown}
+            className="text-[10rem] font-black text-yellow-500 leading-none animate-ping-once"
+            style={{
+              animation: "zoomIn 0.3s ease-out",
+            }}
+          >
+            {countdown}
+          </div>
+        </div>
+      )}
+
+      {/* Winner reveal */}
+      {showWinner && winner && countdown === null && (
+        <div className="bg-yellow-100 border-4 border-yellow-400 rounded-3xl p-8 mb-6 text-center shadow-xl"
+          style={{ animation: "zoomIn 0.4s ease-out" }}
         >
-          <p className={`text-5xl mb-2 ${celebrate ? "animate-bounce" : ""}`}>
-            🏆
+          <p className="text-6xl mb-3 animate-bounce">🏆</p>
+          <p className="text-gray-500 text-sm font-medium mb-2 tracking-widest uppercase">
+            Bấm đầu tiên
           </p>
-          <p className="text-gray-600 text-sm font-medium mb-1">BẤM ĐẦU TIÊN</p>
-          <p className="text-4xl font-extrabold text-yellow-700">{winner.name}</p>
-          <p className="text-gray-500 mt-2">
+          <p className="text-5xl font-extrabold text-yellow-700 mb-3">
+            {winner.name}
+          </p>
+          <p className="text-gray-500">
             Thời gian phản xạ:{" "}
             <span className="font-bold text-yellow-600">{winner.time}ms</span>
           </p>
-          {celebrate && (
-            <p className="text-yellow-600 font-bold mt-3 animate-pulse text-lg">
-              Chúc mừng! 🎉🎉🎉
-            </p>
-          )}
+          <p className="text-yellow-600 font-bold mt-4 text-xl animate-pulse">
+            🎉 Chúc mừng! 🎉
+          </p>
         </div>
       )}
 
       {/* Full leaderboard */}
-      {buzzes.length > 0 && (
+      {showWinner && buzzes.length > 0 && (
         <div className="bg-white rounded-2xl shadow p-6">
           <h2 className="text-lg font-bold text-gray-700 mb-4">
             Thứ tự bấm ({buzzes.length} học sinh)
@@ -247,6 +236,13 @@ export default function TeacherPage() {
           <p className="text-lg">Đang chờ học sinh bấm...</p>
         </div>
       )}
+
+      <style>{`
+        @keyframes zoomIn {
+          from { transform: scale(0.3); opacity: 0; }
+          to   { transform: scale(1);   opacity: 1; }
+        }
+      `}</style>
     </main>
   );
 }
