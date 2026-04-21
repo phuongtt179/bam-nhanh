@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import PusherClient from "pusher-js";
 
 interface BuzzEntry {
@@ -11,10 +11,56 @@ interface BuzzEntry {
 
 type GamePhase = "idle" | "active" | "done";
 
+function playWinnerFanfare() {
+  const ctx = new (window.AudioContext || (window as unknown as { webkitAudioContext: typeof AudioContext }).webkitAudioContext)();
+
+  // Nốt nhạc: C5 E5 G5 C6 — fanfare chúc mừng
+  const notes = [523, 659, 784, 1047];
+  const durations = [0.15, 0.15, 0.15, 0.5];
+  const gaps = [0, 0.15, 0.3, 0.45];
+
+  notes.forEach((freq, i) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, ctx.currentTime + gaps[i]);
+
+    gain.gain.setValueAtTime(0, ctx.currentTime + gaps[i]);
+    gain.gain.linearRampToValueAtTime(0.4, ctx.currentTime + gaps[i] + 0.02);
+    gain.gain.exponentialRampToValueAtTime(
+      0.001,
+      ctx.currentTime + gaps[i] + durations[i]
+    );
+
+    osc.start(ctx.currentTime + gaps[i]);
+    osc.stop(ctx.currentTime + gaps[i] + durations[i]);
+  });
+
+  // Thêm 1 chord ngân dài ở cuối
+  [523, 659, 784].forEach((freq) => {
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
+    osc.connect(gain);
+    gain.connect(ctx.destination);
+    osc.type = "sine";
+    osc.frequency.setValueAtTime(freq, ctx.currentTime + 0.6);
+    gain.gain.setValueAtTime(0, ctx.currentTime + 0.6);
+    gain.gain.linearRampToValueAtTime(0.2, ctx.currentTime + 0.65);
+    gain.gain.exponentialRampToValueAtTime(0.001, ctx.currentTime + 1.4);
+    osc.start(ctx.currentTime + 0.6);
+    osc.stop(ctx.currentTime + 1.4);
+  });
+}
+
 export default function TeacherPage() {
   const [phase, setPhase] = useState<GamePhase>("idle");
   const [buzzes, setBuzzes] = useState<BuzzEntry[]>([]);
   const [loading, setLoading] = useState(false);
+  const [celebrate, setCelebrate] = useState(false);
+  const hasPlayedRef = useRef(false);
 
   useEffect(() => {
     const pusher = new PusherClient(
@@ -26,12 +72,23 @@ export default function TeacherPage() {
     channel.bind("game-start", () => {
       setPhase("active");
       setBuzzes([]);
+      setCelebrate(false);
+      hasPlayedRef.current = false;
     });
 
     channel.bind("student-buzz", (entry: BuzzEntry) => {
       setBuzzes((prev) => {
         if (prev.find((b) => b.name === entry.name)) return prev;
         const next = [...prev, entry].sort((a, b) => a.time - b.time);
+
+        // Chỉ phát nhạc cho người đầu tiên
+        if (next[0].name === entry.name && !hasPlayedRef.current) {
+          hasPlayedRef.current = true;
+          playWinnerFanfare();
+          setCelebrate(true);
+          setTimeout(() => setCelebrate(false), 2000);
+        }
+
         return next;
       });
       setPhase("done");
@@ -40,9 +97,10 @@ export default function TeacherPage() {
     channel.bind("game-reset", () => {
       setPhase("idle");
       setBuzzes([]);
+      setCelebrate(false);
+      hasPlayedRef.current = false;
     });
 
-    // Sync state on mount
     fetch("/api/state")
       .then((r) => r.json())
       .then((state) => {
@@ -77,9 +135,7 @@ export default function TeacherPage() {
   return (
     <main className="min-h-screen p-8 max-w-3xl mx-auto">
       <div className="flex items-center justify-between mb-8">
-        <h1 className="text-3xl font-bold text-gray-800">
-          Bảng Giáo Viên
-        </h1>
+        <h1 className="text-3xl font-bold text-gray-800">Bảng Giáo Viên</h1>
         <span className="text-sm text-gray-400">Trang dành riêng cho giáo viên</span>
       </div>
 
@@ -106,7 +162,7 @@ export default function TeacherPage() {
         </button>
       </div>
 
-      {/* Status indicator */}
+      {/* Status bar */}
       <div
         className={`w-full h-4 rounded-full mb-8 transition-colors duration-500 ${
           phase === "idle"
@@ -119,14 +175,27 @@ export default function TeacherPage() {
 
       {/* Winner highlight */}
       {winner && (
-        <div className="bg-yellow-100 border-4 border-yellow-400 rounded-3xl p-6 mb-6 text-center shadow-lg">
-          <p className="text-5xl mb-2">🏆</p>
-          <p className="text-gray-500 text-sm font-medium mb-1">BẤM ĐẦU TIÊN</p>
+        <div
+          className={`border-4 rounded-3xl p-6 mb-6 text-center shadow-lg transition-all duration-300 ${
+            celebrate
+              ? "bg-yellow-300 border-yellow-500 scale-105"
+              : "bg-yellow-100 border-yellow-400"
+          }`}
+        >
+          <p className={`text-5xl mb-2 ${celebrate ? "animate-bounce" : ""}`}>
+            🏆
+          </p>
+          <p className="text-gray-600 text-sm font-medium mb-1">BẤM ĐẦU TIÊN</p>
           <p className="text-4xl font-extrabold text-yellow-700">{winner.name}</p>
           <p className="text-gray-500 mt-2">
             Thời gian phản xạ:{" "}
             <span className="font-bold text-yellow-600">{winner.time}ms</span>
           </p>
+          {celebrate && (
+            <p className="text-yellow-600 font-bold mt-3 animate-pulse text-lg">
+              Chúc mừng! 🎉🎉🎉
+            </p>
+          )}
         </div>
       )}
 
